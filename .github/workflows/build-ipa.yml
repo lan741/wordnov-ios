@@ -1,0 +1,285 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: "iOS Bundle Identifier（无签名打包时也建议与证书一致）"
+        required: false
+        default: "com.hangci.app"
+      display_name:
+        description: "桌面显示名称"
+        required: false
+        default: "WordNov"
+      version:
+        description: "版本号 (CFBundleShortVersionString)"
+        required: false
+        default: "2.1.0"
+      export_method:
+        description: "签名导出方式（有证书时生效）"
+        required: false
+        default: "ad-hoc"
+        type: choice
+        options: [ad-hoc, development, app-store-connect, enterprise, unsigned]
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS 云编译 → IPA
+    runs-on: macos-14
+    timeout-minutes: 75
+
+    env:
+      BUNDLE_ID: ${{ github.event.inputs.bundle_id || 'com.hangci.app' }}
+      DISPLAY_NAME: ${{ github.event.inputs.display_name || 'WordNov' }}
+      APP_VERSION: ${{ github.event.inputs.version || '2.1.0' }}
+      EXPORT_METHOD: ${{ github.event.inputs.export_method || 'ad-hoc' }}
+      CERT_B64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+      CERT_PASSWORD: ${{ secrets.P12_PASSWORD }}
+      PROFILE_B64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+      TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 环境信息
+        run: |
+          set -x
+          sw_vers
+          xcodebuild -version
+          node -v
+          npm -v
+          pod --version || true
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 判断签名条件
+        id: sign
+        run: |
+          if [ -n "${CERT_B64}" ] && [ -n "${PROFILE_B64}" ] && [ "${EXPORT_METHOD}" != "unsigned" ]; then
+            echo "enabled=true"  >> "$GITHUB_OUTPUT"
+            echo "::notice::检测到证书与描述文件，将输出已签名 IPA"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未提供证书，将输出未签名 IPA（可用 TrollStore / Sideloadly / ESign 自签安装）"
+          fi
+
+      - name: 安装 npm 依赖
+        run: npm install --no-audit --no-fund --loglevel=error
+
+      - name: 生成 Capacitor iOS 工程
+        run: |
+          set -euo pipefail
+          if [ ! -d ios/App ]; then
+            npx cap add ios
+          fi
+          ls -la ios
+
+      - name: 注入去广告补丁并核验
+        run: |
+          set -euo pipefail
+          node scripts/apply-adblock.mjs | tee adblock-report.txt
+          grep -q "noadblock.js" www/index.html
+          test -f www/noadblock.js
+
+      - name: 同步 web 资源到 iOS 工程
+        run: npx cap sync ios
+
+      - name: 安装 CocoaPods 依赖
+        run: |
+          set -euo pipefail
+          cd ios/App
+          if [ -f Podfile ]; then pod install; fi
+          ls
+
+      - name: 替换 App 图标与启动图
+        run: |
+          set -euo pipefail
+          ICON_DIR="ios/App/App/Assets.xcassets/AppIcon.appiconset"
+          if [ -d ios-overlay/AppIcon ] && [ -d "$ICON_DIR" ]; then
+            rm -f "$ICON_DIR"/*.png
+            for f in ios-overlay/AppIcon/*.png; do
+              [ -e "$f" ] || continue
+              cp -f "$f" "$ICON_DIR/$(basename "$f")"
+            done
+            cp -f ios-overlay/AppIcon/Contents.json "$ICON_DIR/Contents.json"
+          fi
+          SPLASH_DIR="ios/App/App/Assets.xcassets/Splash.imageset"
+          if [ -d ios-overlay/Splash ] && [ -d "$SPLASH_DIR" ]; then
+            for f in ios-overlay/Splash/*.png; do
+              [ -e "$f" ] || continue
+              cp -f "$f" "$SPLASH_DIR/$(basename "$f")"
+            done
+          fi
+          ls -la "$ICON_DIR" >/dev/null
+          echo "图标文件数：$(ls "$ICON_DIR"/*.png | wc -l)"
+
+      - name: 写入 Bundle ID / 显示名 / 版本 / 权限
+        run: |
+          set -euo pipefail
+          PLIST="ios/App/App/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" "$PLIST" \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string ${BUNDLE_ID}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${DISPLAY_NAME}" "$PLIST" \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ${DISPLAY_NAME}" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName ${DISPLAY_NAME}" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${APP_VERSION}" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string 用于导入词库与反馈时选择图片" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryAddUsageDescription string 用于保存图片" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 用于拍照上传反馈图片" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string 用于语音朗读与识别" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$PLIST" || true
+          plutil -p "$PLIST" > "$RUNNER_TEMP/Info.dump.txt" || true
+          head -40 "$RUNNER_TEMP/Info.dump.txt" || true
+
+      # ------------------------------------------------------------------
+      - name: 构建未签名 IPA
+        working-directory: ios/App
+        run: |
+          set -o pipefail
+          rm -rf build Payload *.ipa
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            | tee build.log | tail -n 80
+          APP_PATH="build/Build/Products/Release-iphoneos/App.app"
+          test -d "$APP_PATH"
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -qry "WordNov-${APP_VERSION}-unsigned.ipa" Payload
+          ls -lh *.ipa
+          shasum -a 256 *.ipa
+
+      # ------------------------- 可选：证书签名 --------------------------
+      - name: 导入签名证书与描述文件
+        if: steps.sign.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASS="$(uuidgen)"
+          python3 -c "import base64,sys;open(sys.argv[2],'wb').write(base64.b64decode(sys.argv[1]))" "$CERT_B64" "$RUNNER_TEMP/cert.p12"
+          python3 -c "import base64,sys;open(sys.argv[2],'wb').write(base64.b64decode(sys.argv[1]))" "$PROFILE_B64" "$RUNNER_TEMP/profile.mobileprovision"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp "$RUNNER_TEMP/profile.mobileprovision" "$HOME/Library/MobileDevice/Provisioning Profiles/"
+          security cms -D -i "$RUNNER_TEMP/profile.mobileprovision" > "$RUNNER_TEMP/profile.plist"
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/profile.plist")
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/profile.plist")
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+          echo "PROFILE_UUID=$PROFILE_UUID" >> "$GITHUB_ENV"
+          echo "描述文件：$PROFILE_NAME ($PROFILE_UUID)"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: 生成 ExportOptions.plist
+        if: steps.sign.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>${EXPORT_METHOD}</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>compileBitcode</key><false/>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key><string>${PROFILE_NAME}</string>
+            </dict>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint ExportOptions.plist
+
+      - name: 构建并导出已签名 IPA
+        if: steps.sign.outputs.enabled == 'true'
+        working-directory: ios/App
+        run: |
+          set -o pipefail
+          rm -rf archive export
+          xcodebuild archive \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath archive/App.xcarchive \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            | tee archive.log | tail -n 80
+          xcodebuild -exportArchive \
+            -archivePath archive/App.xcarchive \
+            -exportPath export \
+            -exportOptionsPlist ../../ExportOptions.plist \
+            | tee export.log | tail -n 60
+          ls -lh export/
+          cp export/*.ipa "WordNov-${APP_VERSION}-signed.ipa"
+          shasum -a 256 "WordNov-${APP_VERSION}-signed.ipa"
+
+      # ------------------------------------------------------------------
+      - name: 汇总报告
+        if: always()
+        run: |
+          {
+            echo "## WordNov iOS 构建结果"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "| --- | --- |"
+            echo "| Bundle ID | \`${BUNDLE_ID}\` |"
+            echo "| 显示名称 | ${DISPLAY_NAME} |"
+            echo "| 版本 | ${APP_VERSION} (build ${GITHUB_RUN_NUMBER}) |"
+            echo "| 签名状态 | $([ "${{ steps.sign.outputs.enabled }}" = "true" ] && echo "已签名 (${EXPORT_METHOD})" || echo "未签名") |"
+            echo ""
+            echo "### 去广告核验"
+            echo '```'
+            cat adblock-report.txt 2>/dev/null || echo "报告缺失"
+            echo '```'
+            echo ""
+            echo "### 安装方式"
+            echo "1. **TrollStore**（iOS 14–16.6.1 等支持版本）：直接分享未签名 IPA 给 TrollStore 安装。"
+            echo "2. **Sideloadly / AltStore**：用你自己的 Apple ID 自签，7 天有效（付费开发者 1 年）。"
+            echo "3. **ESign / 爱思 / 牛蛙**：用企业证书自签安装。"
+            echo "4. 有开发者账号：把 p12+描述文件放进 Secrets，本工作流直接产出已签名 IPA。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传 IPA 与日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordNov-IPA-${{ github.run_number }}
+          path: |
+            ios/App/*.ipa
+            ios/App/build.log
+            ios/App/archive.log
+            adblock-report.txt
+            ExportOptions.plist
+          if-no-files-found: warn
+          retention-days: 30

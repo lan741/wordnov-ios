@@ -1,0 +1,14 @@
+# 依赖与产物
+node_modules/
+package-lock.json
+ios/
+Pods/
+*.ipa
+*.xcarchive
+*.log
+.DS_Store
+Thumbs.db
+
+# 本地临时
+_work/
+dist/

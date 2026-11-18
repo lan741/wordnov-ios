@@ -1,0 +1,26 @@
+{
+  "appId": "com.hangci.app",
+  "appName": "WordNov",
+  "webDir": "www",
+  "loggingBehavior": "none",
+  "server": {
+    "androidScheme": "https",
+    "allowNavigation": [
+      "wordnov-api.cctools.icu",
+      "*.cctools.icu",
+      "jiting.xyz",
+      "*.jiting.xyz"
+    ]
+  },
+  "ios": {
+    "contentInset": "always",
+    "scrollEnabled": true,
+    "limitsNavigationsToAppBoundDomains": false,
+    "backgroundColor": "#F6F8F2"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "presentationOptions": ["badge", "sound", "banner", "list"]
+    }
+  }
+}

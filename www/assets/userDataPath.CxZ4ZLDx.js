@@ -1,0 +1,1 @@
+function n(){try{if("undefined"!=typeof uni&&uni.env&&uni.env.USER_DATA_PATH)return uni.env.USER_DATA_PATH}catch(n){}try{if("undefined"!=typeof plus&&plus.io)return plus.io.convertLocalFileSystemURL("_doc")}catch(n){}return"_doc"}export{n as g};

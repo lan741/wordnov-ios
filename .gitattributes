@@ -1,0 +1,8 @@
+# 全部按二进制处理，避免 Windows 检出时把 Web bundle 的换行符改写
+* -text
+*.png binary
+*.jpg binary
+*.wav binary
+*.mp3 binary
+*.ttf binary
+*.woff2 binary

@@ -4,6 +4,24 @@
 
 ---
 
+## ✅ 已构建成功（本次结果）
+
+| 项目 | 值 |
+| --- | --- |
+| 仓库 | https://github.com/lan741/wordnov-ios |
+| 运行记录 | https://github.com/lan741/wordnov-ios/actions/runs/44237586799 |
+| 产物 | `WordNov-2.1.0-unsigned.ipa`（68.6 MB，8816 个条目） |
+| SHA-256 | `480EF1AD57275E5C3379801A0105DB286536D804C8F3D8278EEF96BC46B6D008` |
+| 二进制 | `Payload/App.app/App` = arm64 Mach-O，链接 Capacitor / CapacitorApp / CapacitorFilesystem / CapacitorLocalNotifications |
+| Info.plist | `com.hangci.app` · `WordNov` · 2.1.0 (build 3) · MinimumOSVersion 13.0 |
+| 去广告 | `Payload/App.app/public/noadblock.js` 已进包，`index.html` 已注入，CI 核验报告：广告域名命中 0 |
+| 签名 | 未签名（无 `_CodeSignature` / 无描述文件）→ 用 TrollStore / Sideloadly / ESign 安装 |
+
+> ⚠️ 仓库当前是 **public**。原因：GitHub 免费账号的**私有仓库**没有 macOS runner（会报 `The configuration 'macos-14-arm64-us-xl' is not supported`），macOS 云机器只在 public 仓库免费。
+> 想改回私有：`gh repo edit lan741/wordnov-ios --visibility private`（之后需要付费 plan 才能继续云编译，或在本地 Mac 用 `bash scripts/build-ios.sh`）。
+
+---
+
 ## 0. 先说结论（技术事实）
 
 拆包核验结果：
@@ -218,6 +236,12 @@ window.__NOV_ADBLOCK_REPORT();
 ---
 
 ## 8. 常见问题
+
+**Q：报 `The configuration 'macos-14-arm64-us-xl' is not supported` / 任务 0 秒失败？**
+私有仓库 + 免费账号没有 macOS runner。把仓库改成 public（`gh repo edit <owner>/<repo> --visibility public`），或升级付费 plan；也可把 `runs-on` 改成 `macos-15`（本项目当前用 `macos-15`，实测通过）。
+
+**Q：改了 `runs-on` 之后 GitHub 说 `Workflow does not have 'workflow_dispatch' trigger`？**
+工作流文件被非 UTF-8 编码破坏（中文变乱码）导致解析失败。用编辑器以 UTF-8 保存，`git diff` 看一眼中文是否正常。
 
 **Q：白屏 / 只显示标题？**
 看 Actions 日志里 `npx cap sync ios` 是否成功、`www/index.html` 是否被正确复制。本地可用 Safari 连真机看 Console 报错。
